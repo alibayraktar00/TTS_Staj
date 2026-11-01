@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS users (
   username     VARCHAR(50)  NOT NULL UNIQUE,
   email        VARCHAR(100) NOT NULL UNIQUE,
   password     VARCHAR(255) NOT NULL,
-  role         ENUM('admin', 'user', 'manager') NOT NULL DEFAULT 'user',
+  role         ENUM('admin', 'user', 'manager', 'sub_admin') NOT NULL DEFAULT 'user',
   department   VARCHAR(100) NULL,
   is_manager   BOOLEAN NOT NULL DEFAULT FALSE,
   is_active    BOOLEAN NOT NULL DEFAULT TRUE,
@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS tickets (
   category_id    INT NOT NULL,
   talep_tipi     ENUM('DONANIM','YAZILIM') NULL,
   assigned_to    INT NULL,
+  assigned_sub_admin_id INT NULL,
   manager_id     INT NULL,
   manager_status ENUM('beklemede','onaylandi','reddedildi') NOT NULL DEFAULT 'beklemede',
   manager_note   TEXT NULL,
@@ -51,7 +52,8 @@ CREATE TABLE IF NOT EXISTS tickets (
   FOREIGN KEY (user_id)     REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE RESTRICT,
   FOREIGN KEY (assigned_to) REFERENCES users(id) ON DELETE SET NULL,
-  FOREIGN KEY (manager_id)  REFERENCES users(id) ON DELETE SET NULL,
+  CONSTRAINT fk_tickets_sub_admin FOREIGN KEY (assigned_sub_admin_id) REFERENCES users(id) ON DELETE SET NULL,
+  CONSTRAINT fk_tickets_manager   FOREIGN KEY (manager_id)            REFERENCES users(id) ON DELETE SET NULL,
   INDEX idx_tickets_user_id    (user_id),
   INDEX idx_tickets_category_id(category_id),
   INDEX idx_tickets_status     (status),
@@ -102,61 +104,68 @@ INSERT IGNORE INTO categories (name) VALUES
   ('WEB SİTESİ'),
   ('WFM');
 
--- ─── MIGRATION: Mevcut veritabanı için ALTER TABLE ────────────────────────────
--- Bu blok yalnızca veritabanı zaten oluşturulmuşsa çalıştırılmalıdır.
--- Yeni kurulumda CREATE TABLE zaten güncel şemayı içeriyor.
+-- ─── MIGRATION: Mevcut veritabanı için ───────────────────────────────────────
+-- Yeni kurulumda yukarıdaki CREATE TABLE'lar zaten güncel şemayı içerir; bu
+-- blok yalnızca eski bir veritabanını güncellemek içindir ve tekrar
+-- çalıştırılması güvenlidir. MySQL 8 "ADD COLUMN IF NOT EXISTS" desteklemediği
+-- için her sütun/FK önce information_schema'dan kontrol edilip öyle ekleniyor.
 
-ALTER TABLE users
-  MODIFY COLUMN role ENUM('admin','user','manager') NOT NULL DEFAULT 'user',
-  ADD COLUMN IF NOT EXISTS department VARCHAR(100) NULL   AFTER role,
-  ADD COLUMN IF NOT EXISTS is_manager BOOLEAN NOT NULL DEFAULT FALSE AFTER department;
-
-ALTER TABLE tickets
-  ADD COLUMN IF NOT EXISTS talep_tipi     ENUM('DONANIM','YAZILIM') NULL              AFTER category_id,
-  ADD COLUMN IF NOT EXISTS manager_id     INT NULL                                    AFTER assigned_to,
-  ADD COLUMN IF NOT EXISTS manager_status ENUM('beklemede','onaylandi','reddedildi')
-                                          NOT NULL DEFAULT 'beklemede'                AFTER manager_id,
-  ADD COLUMN IF NOT EXISTS manager_note   TEXT NULL                                   AFTER manager_status;
-
--- Foreign key yalnızca yoksa eklenir (MySQL 8+ için)
-SET @fk_exists = (
-  SELECT COUNT(*) FROM information_schema.KEY_COLUMN_USAGE
-  WHERE TABLE_SCHEMA = DATABASE()
-    AND TABLE_NAME   = 'tickets'
-    AND COLUMN_NAME  = 'manager_id'
-    AND REFERENCED_TABLE_NAME IS NOT NULL
-);
-
-SET @sql = IF(@fk_exists = 0,
-  'ALTER TABLE tickets ADD CONSTRAINT fk_tickets_manager FOREIGN KEY (manager_id) REFERENCES users(id) ON DELETE SET NULL',
-  'SELECT 1'
-);
-PREPARE stmt FROM @sql;
-EXECUTE stmt;
-DEALLOCATE PREPARE stmt;
-
--- ─── MIGRATION: Sub Admin sistemi ────────────────────────────────────────────
--- users.role ENUM'una 'sub_admin' ekleniyor
 ALTER TABLE users
   MODIFY COLUMN role ENUM('admin','user','manager','sub_admin') NOT NULL DEFAULT 'user';
 
--- tickets tablosuna assigned_sub_admin_id kolonu ekleniyor
-ALTER TABLE tickets
-  ADD COLUMN IF NOT EXISTS assigned_sub_admin_id INT NULL AFTER assigned_to;
+-- users.department
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS
+               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'department') = 0,
+  'ALTER TABLE users ADD COLUMN department VARCHAR(100) NULL AFTER role', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
--- Foreign key yalnızca yoksa eklenir
-SET @fk_sa_exists = (
-  SELECT COUNT(*) FROM information_schema.KEY_COLUMN_USAGE
-  WHERE TABLE_SCHEMA = DATABASE()
-    AND TABLE_NAME   = 'tickets'
-    AND COLUMN_NAME  = 'assigned_sub_admin_id'
-    AND REFERENCED_TABLE_NAME IS NOT NULL
-);
+-- users.is_manager
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS
+               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'is_manager') = 0,
+  'ALTER TABLE users ADD COLUMN is_manager BOOLEAN NOT NULL DEFAULT FALSE AFTER department', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
-SET @sql_sa = IF(@fk_sa_exists = 0,
+-- tickets.talep_tipi
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS
+               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tickets' AND COLUMN_NAME = 'talep_tipi') = 0,
+  'ALTER TABLE tickets ADD COLUMN talep_tipi ENUM(''DONANIM'',''YAZILIM'') NULL AFTER category_id', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- tickets.assigned_sub_admin_id
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS
+               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tickets' AND COLUMN_NAME = 'assigned_sub_admin_id') = 0,
+  'ALTER TABLE tickets ADD COLUMN assigned_sub_admin_id INT NULL AFTER assigned_to', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- tickets.manager_id
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS
+               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tickets' AND COLUMN_NAME = 'manager_id') = 0,
+  'ALTER TABLE tickets ADD COLUMN manager_id INT NULL AFTER assigned_sub_admin_id', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- tickets.manager_status
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS
+               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tickets' AND COLUMN_NAME = 'manager_status') = 0,
+  'ALTER TABLE tickets ADD COLUMN manager_status ENUM(''beklemede'',''onaylandi'',''reddedildi'') NOT NULL DEFAULT ''beklemede'' AFTER manager_id', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- tickets.manager_note
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS
+               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tickets' AND COLUMN_NAME = 'manager_note') = 0,
+  'ALTER TABLE tickets ADD COLUMN manager_note TEXT NULL AFTER manager_status', 'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- Foreign key'ler yalnızca yoksa eklenir
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.KEY_COLUMN_USAGE
+               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tickets'
+                 AND COLUMN_NAME = 'manager_id' AND REFERENCED_TABLE_NAME IS NOT NULL) = 0,
+  'ALTER TABLE tickets ADD CONSTRAINT fk_tickets_manager FOREIGN KEY (manager_id) REFERENCES users(id) ON DELETE SET NULL',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.KEY_COLUMN_USAGE
+               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tickets'
+                 AND COLUMN_NAME = 'assigned_sub_admin_id' AND REFERENCED_TABLE_NAME IS NOT NULL) = 0,
   'ALTER TABLE tickets ADD CONSTRAINT fk_tickets_sub_admin FOREIGN KEY (assigned_sub_admin_id) REFERENCES users(id) ON DELETE SET NULL',
-  'SELECT 1'
-);
-PREPARE stmt_sa FROM @sql_sa;
-EXECUTE stmt_sa;
-DEALLOCATE PREPARE stmt_sa;
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
